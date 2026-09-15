@@ -1,0 +1,24 @@
+# Raw sequencing data
+*.fastq
+*.fastq.gz
+*.fq
+*.fq.gz
+
+# Analysis outputs
+results/
+logs/
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# VS Code
+.vscode/
