@@ -1,0 +1,57 @@
+# =============================================================================
+# 16S Amplicon Sequencing Pipeline - Snakemake entry point
+# =============================================================================
+# Usage:
+#   snakemake --use-conda --cores <N> --configfile config/config.yaml
+#
+# This Snakefile is intentionally thin: it loads configuration, defines the
+# global target, and includes modular rule files from workflow/rules/.
+# =============================================================================
+
+import os
+from pathlib import Path
+
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+configfile: "../config/config.yaml"
+
+# Resolve the workflow root (directory containing this Snakefile).
+WORKFLOW_DIR = Path(workflow.basedir)
+ROOT_DIR = WORKFLOW_DIR.parent
+
+# -----------------------------------------------------------------------------
+# Global settings
+# -----------------------------------------------------------------------------
+# Keep going on independent jobs; report failures at the end.
+keep_going: True
+
+# Record tool versions for reproducibility.
+print("16S pipeline starting; see logs/ and results/versions/ for provenance.")
+
+# -----------------------------------------------------------------------------
+# Include modular rule files (one concern per file)
+# -----------------------------------------------------------------------------
+include: "rules/common.smk"
+include: "rules/preprocessing.smk"   # pre-QC input/index diagnostics
+
+# Quality control stage (FastQC / fastp / MultiQC). Defines qc_targets().
+include: "rules/qc.smk"
+
+# include: "rules/demultiplex.smk"
+# include: "rules/primer_removal.smk"
+# include: "rules/filtering.smk"
+# include: "rules/denoising.smk"
+# include: "rules/taxonomy.smk"
+# include: "rules/depth.smk"
+# include: "rules/diversity.smk"
+
+# -----------------------------------------------------------------------------
+# Target rule (default)
+# -----------------------------------------------------------------------------
+rule all:
+    input:
+        # Pre-QC diagnostics (empty list when disabled in config).
+        preprocessing_targets(),
+        # Quality-control outputs (FastQC + fastp + MultiQC).
+        qc_targets(),

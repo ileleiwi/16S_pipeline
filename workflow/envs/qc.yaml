@@ -1,0 +1,17 @@
+# =============================================================================
+# qc.yaml - environment for the quality-control stage
+# =============================================================================
+# Used by workflow/rules/qc.smk. Provides the QC toolchain:
+#   - FastQC    : per-file raw-read quality reports
+#   - fastp     : adapter/quality trimming + per-sample reports
+#   - MultiQC   : aggregates FastQC and fastp reports into one report
+# Versions are pinned for reproducibility.
+# =============================================================================
+name: 16s-qc
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - fastqc=0.12.1
+  - fastp=0.23.4
+  - multiqc=1.21

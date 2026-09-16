@@ -1,0 +1,15 @@
+# =============================================================================
+# diagnostics.yaml - environment for pre-QC diagnostic scripts
+# =============================================================================
+# Used by workflow/rules/preprocessing.smk. Provides Python plus the parsing
+# libraries (Biopython, pandas) required by the diagnostic scripts in
+# workflow/scripts/. Versions are pinned for reproducibility.
+# =============================================================================
+name: 16s-diagnostics
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - biopython=1.83
+  - pandas=2.2.2

@@ -1,0 +1,2 @@
+sample_id	batch	group	sample_type	subject	r1	r2	forward_primer	reverse_primer
+test_sample	1	control	stool	S1	data/raw/read1.fastq.gz	data/raw/read2.fastq.gz

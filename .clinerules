@@ -1,0 +1,60 @@
+# Cline Rules — 16S Amplicon Sequencing Pipeline
+
+## Project Overview
+This repository contains a reproducible bioinformatics workflow for processing
+16S rRNA gene amplicon sequencing data. The pipeline follows this flow:
+
+Raw FASTQ → Quality control → Demultiplexing → Primer removal → Quality
+filtering → Denoising → ASV generation → Taxonomic assignment →
+Sequencing-depth assessment → Downstream analysis
+
+## Repository Layout
+- `config/` — pipeline configuration files (samplesheets, parameters, YAML configs)
+- `data/` — input data (raw FASTQ is gitignored; keep only small test data tracked)
+- `docs/` — documentation, methods write-ups, and analysis notes
+- `workflow/` — the pipeline itself
+  - `workflow/rules/` — Snakemake rule files (one concern per file)
+  - `workflow/envs/` — conda environment YAML files (one per tool/rule group)
+  - `workflow/scripts/` — R and Python scripts called by rules
+  - `workflow/notebooks/` — R Markdown / Jupyter notebooks for downstream analysis
+
+## Conventions
+- **Workflow engine:** Snakemake. Keep rules modular and in `workflow/rules/`.
+- **Environments:** Pin tool versions in `workflow/envs/*.yaml`. Never rely on
+  the ambient system environment for pipeline steps.
+- **Scripts:** Prefer R for statistics/ecology and Python for general scripting.
+  Scripts must be non-interactive and take inputs/outputs as arguments.
+- **Paths:** Use paths relative to the workflow root. Never hardcode absolute
+  paths or `~`/`$HOME`.
+- **Reproducibility:** Every step must be deterministic and documented. Record
+  tool versions and reference database versions.
+- **Data hygiene:** Never commit raw FASTQ, large outputs, or reference
+  databases (see `.gitignore`). Keep `results/`, `logs/`, `resources/` untracked.
+
+## Coding Standards
+- R: follow the tidyverse style guide; use `snake_case`; prefer `here()` for paths.
+- Python: follow PEP 8; use `snake_case`; use `argparse` for CLI scripts.
+- Snakemake: use `snake_case` for rule names; one logical step per rule; always
+  define `input`, `output`, `log`, `threads`, and `conda`/`envmodules` where relevant.
+- Keep scripts small and single-purpose; document parameters at the top.
+
+## Documentation
+- Update `README.md` when the workflow changes.
+- Keep the Memory Bank (`memory-bank/`) current — see below.
+
+## Memory Bank
+This project uses a Cline Memory Bank in `memory-bank/`. At the start of every
+task, read ALL memory bank files to rebuild context. After any significant
+change, update the relevant memory bank files. The files are:
+- `projectbrief.md` — foundational goals and scope
+- `productContext.md` — why the project exists, problems it solves
+- `systemPatterns.md` — architecture, key technical decisions, design patterns
+- `techContext.md` — technologies, tools, setup, constraints
+- `activeContext.md` — current work focus, recent changes, next steps
+- `progress.md` — what works, what's left, known issues
+
+## Do Not
+- Do not commit large data or generated outputs.
+- Do not modify `.gitignore` to track raw data or results.
+- Do not introduce new tools without pinning versions in an env file.
+- Do not break the documented workflow order without updating docs.

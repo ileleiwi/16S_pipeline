@@ -1,0 +1,125 @@
+# =============================================================================
+# 16S Amplicon Sequencing Pipeline - main configuration
+# =============================================================================
+# All tunable parameters live here. Rules and scripts must read from this file
+# rather than hardcoding values. Paths are relative to the repository root.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Inputs
+# -----------------------------------------------------------------------------
+samplesheet: "config/samples.tsv"      # sample metadata / FASTQ locations
+raw_dir: "data/raw"                    # directory containing raw FASTQ
+
+# -----------------------------------------------------------------------------
+# Pre-QC diagnostics (run before quality control)
+# -----------------------------------------------------------------------------
+# Validate raw inputs and library/index configuration before the main QC stage.
+# These steps are diagnostic: they report issues (barcode format, index
+# congruency, contaminant carry-over) rather than modify data. Set
+# `enabled: false` to skip the whole stage.
+diagnostics:
+  enabled: true
+  # Test dataset shipped under data/raw/ (EMP-style dual-indexed run):
+  # Illumina index files (I1/I2) and the sample mapping file used to determine
+  # the correct barcode format for demultiplexing.
+  index1: "data/raw/index1.fastq.gz"
+  index2: "data/raw/index2.fastq.gz"
+  mapping_file: "data/raw/mapping_file.txt"
+  # Undetermined (unmapped) read pairs produced by the demultiplexing step.
+  # For the bundled test dataset the raw reads are used as the undetermined
+  # pool because no demultiplexing has been performed yet.
+  unmapped_r1: "data/raw/read1.fastq.gz"
+  unmapped_r2: "data/raw/read2.fastq.gz"
+  # Reference sequences used to screen unmapped reads for contamination.
+  contaminants: "resources/contaminants.fasta"
+  barcode:
+    sample_size: 10000                 # reads sampled for barcode format testing
+    min_success: 1.0                   # minimum success rate (%) to accept a format
+    test_reverse_complement: true      # also test reverse-complement formats
+
+# -----------------------------------------------------------------------------
+# Library design
+# -----------------------------------------------------------------------------
+sequencing:
+  layout: "paired"                     # "paired" or "single"
+  region: "V3-V4"                      # 16S hypervariable region
+  read_suffix:
+    r1: "_R1.fastq.gz"
+    r2: "_R2.fastq.gz"
+
+# -----------------------------------------------------------------------------
+# Primers (IUPAC nucleotides allowed). Set to null if already removed.
+# Defaults here are the common 341F/805R V3-V4 pair.
+# -----------------------------------------------------------------------------
+primers:
+  forward: "CCTACGGGNGGCWGCAG"         # 341F
+  reverse: "GACTACHVGGGTATCTAATCC"     # 805R
+  remove: true                         # whether to run primer removal
+
+# -----------------------------------------------------------------------------
+# Quality control (fastp)
+# -----------------------------------------------------------------------------
+qc:
+  min_quality: 20
+  min_length: 50
+  max_length: 0                        # 0 = no upper limit
+  max_n: 0                             # 0 = no limit on N bases
+  trim_front: 0
+  trim_tail: 0
+  adapter_detection: true
+
+# -----------------------------------------------------------------------------
+# Denoising (DADA2 defaults)
+# -----------------------------------------------------------------------------
+denoising:
+  tool: "dada2"                        # dada2 | deblur | unoise3
+  trunc_len_f: 240
+  trunc_len_r: 160
+  max_ee_f: 2
+  max_ee_r: 2
+  trunc_q: 2
+  max_n: 0
+  pool: "pseudo"                       # false | true | pseudo
+  remove_chimeras: true
+  seed: 42
+
+# -----------------------------------------------------------------------------
+# Taxonomy
+# -----------------------------------------------------------------------------
+taxonomy:
+  method: "dada2"                      # dada2 | vsearch | qiime2
+  min_bootstrap: 80
+  database:
+    name: "silva"                      # silva | greengenes2 | gtdb | rdp
+    version: "138.1"
+    train_set: "resources/silva_nr99_v138.1_train_set.fa.gz"
+    species_set: "resources/silva_species_assignment_v138.1.fa.gz"
+    checksum: ""                       # record md5/sha256 of the DB
+
+# -----------------------------------------------------------------------------
+# Sequencing-depth assessment
+# -----------------------------------------------------------------------------
+depth:
+  rarefaction:
+    min_depth: 1000
+    max_depth: 50000
+    steps: 20
+    iterations: 10
+  seed: 42
+
+# -----------------------------------------------------------------------------
+# Downstream / diversity analysis
+# -----------------------------------------------------------------------------
+diversity:
+  metrics_alpha: ["shannon", "simpson", "observed"]
+  metrics_beta: ["braycurtis", "jaccard"]
+  distance: "braycurtis"
+  ordination: ["pcoa", "nmds"]
+
+# -----------------------------------------------------------------------------
+# Resources
+# -----------------------------------------------------------------------------
+resources:
+  threads_default: 4
+  mem_mb_default: 8000
