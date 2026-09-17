@@ -64,9 +64,9 @@ A small EMP-style dual-indexed test run is bundled under `data/raw/`:
 | `mapping_file.txt` | EMP barcode-to-sample mapping |
 
 `config/samples.tsv` points the `test_sample` row at these reads, and the
-`diagnostics:` block in `config/config.yaml` references the index and mapping
-files. The contaminant screen is skipped automatically when
-`resources/contaminants.fasta` is absent.
+`diagnostics:` block in `config/config.yaml` references the index, mapping, and
+contaminant files (`contam_seqs.fa`, phiX174) so the contaminant screen runs.
+The contaminant screen is skipped automatically when its reference is absent.
 
 ## Running
 

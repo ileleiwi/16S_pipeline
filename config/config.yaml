@@ -32,7 +32,7 @@ diagnostics:
   unmapped_r1: "data/raw/read1.fastq.gz"
   unmapped_r2: "data/raw/read2.fastq.gz"
   # Reference sequences used to screen unmapped reads for contamination.
-  contaminants: "resources/contaminants.fasta"
+  contaminants: "data/raw/contam_seqs.fa"
   barcode:
     sample_size: 10000                 # reads sampled for barcode format testing
     min_success: 1.0                   # minimum success rate (%) to accept a format
