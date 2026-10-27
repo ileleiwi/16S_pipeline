@@ -23,6 +23,7 @@ from Bio import SeqIO
 import pandas as pd
 import time
 from itertools import islice
+from contextlib import nullcontext
 
 def parse_arguments():
     """Parse command line arguments."""
@@ -33,16 +34,27 @@ def parse_arguments():
     # Main required arguments
     parser.add_argument("--index1", required=True,
                        help="Path to index1 FASTQ file (gzipped)")
-    parser.add_argument("--index2", required=True,
-                       help="Path to index2 FASTQ file (gzipped)")
-    parser.add_argument("--mapping_file", required=True,
-                       help="Path to mapping file with sample and barcode information")
+    parser.add_argument("--index2", default=None,
+                       help="Path to index2 FASTQ file (gzipped). Omit for single-index runs.")
+    parser.add_argument("--mapping_file", default=None,
+                       help="EMP/QIIME-style mapping file (tab-delimited, '#SampleID' header, "
+                            "BarcodeSequence column)")
+    parser.add_argument("--barcode_table", default=None,
+                       help="Tabular barcode table (xlsx/csv/tsv), one row per sample")
+    parser.add_argument("--barcode_sheet", default=None,
+                       help="Sheet name when --barcode_table is an xlsx file")
+    parser.add_argument("--sample_column", default="sample-id",
+                       help="Sample id column in --barcode_table (default: sample-id)")
+    parser.add_argument("--barcode_column", default="barcode-sequence",
+                       help="Barcode column in --barcode_table (default: barcode-sequence)")
     
     # Sample size for testing
     parser.add_argument("--sample_size", type=int, default=10000,
                        help="Number of reads to sample for barcode format testing")
     parser.add_argument("--min_success", type=float, default=1.0,
                        help="Minimum success rate to consider a format successful (percent)")
+    parser.add_argument("--max_mismatches", type=int, default=0,
+                       help="Allowed barcode mismatches per read (default: 0 = exact)")
     parser.add_argument("--no_rc", action="store_true",
                        help="Skip testing reverse complement formats (faster)")
     parser.add_argument("--verbose", action="store_true",
@@ -52,8 +64,13 @@ def parse_arguments():
     
     args = parser.parse_args()
     
-    # Validate that input files exist
-    for file_path in [args.index1, args.index2, args.mapping_file]:
+    # Validate the provided inputs: exactly one barcode source is required, and
+    # index2 is only checked when it was supplied (single-index runs omit it).
+    if not args.mapping_file and not args.barcode_table:
+        parser.error("provide either --mapping_file or --barcode_table")
+    paths = [args.index1]
+    paths += [p for p in (args.index2, args.mapping_file, args.barcode_table) if p]
+    for file_path in paths:
         if not os.path.exists(file_path):
             print(f"Error: File not found: {file_path}", file=sys.stderr)
             sys.exit(1)
@@ -135,6 +152,53 @@ def read_mapping_file(mapping_path):
         print(f"Error reading mapping file: {str(e)}", file=sys.stderr)
         sys.exit(1)
 
+def read_barcode_table(path, sheet=0, sample_column="sample-id", barcode_column="barcode-sequence"):
+    """
+    Read a tabular barcode table (xlsx/csv/tsv) into the same shape as an EMP
+    mapping file: SampleID + BarcodeSequence columns.
+
+    Rows without a barcode (common in curation spreadsheets) cannot be
+    demultiplexed and are dropped, but the count is reported so it is not
+    silently lost.
+
+    Args:
+        path: Path to the barcode table
+        sheet: Sheet name or index (xlsx only)
+        sample_column: Column holding the sample identifiers
+        barcode_column: Column holding the barcode sequences
+
+    Returns:
+        DataFrame with SampleID and BarcodeSequence columns
+    """
+    lowered = path.lower()
+    try:
+        if lowered.endswith((".xlsx", ".xlsm", ".xls")):
+            frame = pd.read_excel(path, sheet_name=sheet, dtype=str)
+        elif lowered.endswith((".tsv", ".txt")):
+            frame = pd.read_csv(path, sep="\t", dtype=str, comment="#")
+        else:
+            frame = pd.read_csv(path, sep=",", dtype=str, comment="#")
+    except Exception as exc:
+        print(f"Error reading barcode table: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    missing = [c for c in (sample_column, barcode_column) if c not in frame.columns]
+    if missing:
+        print(f"Error: barcode table is missing column(s): {', '.join(missing)}", file=sys.stderr)
+        print(f"Available columns: {', '.join(map(str, frame.columns))}", file=sys.stderr)
+        sys.exit(1)
+
+    table = frame[[sample_column, barcode_column]].rename(
+        columns={sample_column: "SampleID", barcode_column: "BarcodeSequence"}
+    )
+    table["BarcodeSequence"] = table["BarcodeSequence"].fillna("").str.strip().str.upper()
+    total = len(table)
+    blank = int((table["BarcodeSequence"] == "").sum())
+    table = table[table["BarcodeSequence"] != ""].drop_duplicates(subset=["SampleID"])
+    print(f"Barcode table: {total} rows, {blank} without a barcode (skipped), {len(table)} usable")
+    return table.reset_index(drop=True)
+
+
 def create_sample_barcode_map(mapping_df):
     """
     Create a mapping from barcodes to sample IDs.
@@ -181,24 +245,32 @@ def extract_barcodes_from_index_files(index1_path, index2_path, sample_size, ver
     """
     try:
         if verbose:
-            print(f"Extracting barcodes from:\n  Index1: {index1_path}\n  Index2: {index2_path}")
+            print(f"Extracting barcodes from:\n  Index1: {index1_path}")
+            print(f"  Index2: {index2_path if index2_path else '(none - single-index run)'}")
             print(f"Sampling {sample_size:,} reads...")
             
         barcode_dict = {}
         total_processed = 0
         
         # Open and parse both index files simultaneously
-        with gzip.open(index1_path, 'rt') as f1, gzip.open(index2_path, 'rt') as f2:
+        single_index = not index2_path
+        handle2 = nullcontext(None) if single_index else gzip.open(index2_path, 'rt')
+        with gzip.open(index1_path, 'rt') as f1, handle2 as f2:
             # Create iterators for both files
             iter1 = SeqIO.parse(f1, 'fastq')
-            iter2 = SeqIO.parse(f2, 'fastq')
+            iter2 = None if f2 is None else SeqIO.parse(f2, 'fastq')
             
-            for record1, record2 in zip(islice(iter1, sample_size), islice(iter2, sample_size)):
+            if iter2 is None:
+                pair_iter = ((record1, None) for record1 in islice(iter1, sample_size))
+            else:
+                pair_iter = zip(islice(iter1, sample_size), islice(iter2, sample_size))
+
+            for record1, record2 in pair_iter:
                 seq_id1 = record1.id
-                seq_id2 = record2.id
+                seq_id2 = record2.id if record2 is not None else ""
                 
                 # Ensure sequence IDs match (sanity check)
-                if seq_id1 != seq_id2:
+                if record2 is not None and seq_id1 != seq_id2:
                     if verbose:
                         print(f"Warning: Sequence ID mismatch: {seq_id1} != {seq_id2}")
                     continue
@@ -210,7 +282,7 @@ def extract_barcodes_from_index_files(index1_path, index2_path, sample_size, ver
                 
                 # Extract barcode sequences
                 barcode1 = str(record1.seq)
-                barcode2 = str(record2.seq)
+                barcode2 = str(record2.seq) if record2 is not None else ''
                 
                 # Store in dictionary
                 barcode_dict[seq_id] = {
@@ -246,7 +318,44 @@ def reverse_complement(seq):
                  'n': 'n'}
     return ''.join([complement.get(base, base) for base in seq[::-1]])
 
-def test_barcode_formats(barcode_info, barcode_to_sample, no_rc=False, verbose=False):
+def _hamming_within(a, b, max_mismatches):
+    """Return True when a and b have equal length and differ by <= N bases."""
+    if len(a) != len(b):
+        return False
+    mismatches = 0
+    for x, y in zip(a, b):
+        if x != y:
+            mismatches += 1
+            if mismatches > max_mismatches:
+                return False
+    return True
+
+
+def match_barcode(barcode, barcode_to_sample, max_mismatches=0):
+    """Match a read barcode against the expected barcodes.
+
+    Exact matches always win. When max_mismatches > 0 an unmatched read is
+    compared against every expected barcode: a unique best hit is accepted
+    ("corrected"), several equally good hits are reported as "ambiguous" (they
+    would need disambiguation by another index), and no hit stays "unmatched".
+
+    Returns:
+        (sample_id, matched_barcode, status)
+    """
+    if barcode in barcode_to_sample:
+        return barcode_to_sample[barcode], barcode, "exact"
+    if max_mismatches > 0:
+        hits = [expected for expected in barcode_to_sample
+                if _hamming_within(barcode, expected, max_mismatches)]
+        if len(hits) == 1:
+            return barcode_to_sample[hits[0]], hits[0], "corrected"
+        if len(hits) > 1:
+            return None, None, "ambiguous"
+    return None, None, "unmatched"
+
+
+def test_barcode_formats(barcode_info, barcode_to_sample, no_rc=False, verbose=False,
+                         max_mismatches=0):
     """
     Test different barcode combination formats to determine which format works best.
     
@@ -292,6 +401,16 @@ def test_barcode_formats(barcode_info, barcode_to_sample, no_rc=False, verbose=F
     
     # Initialize counters for each format
     format_counts = {fmt: {'matched': 0, 'total': 0} for fmt in barcode_formats}
+
+    # Barcode match outcome per format: exact / corrected / ambiguous / unmatched
+    status_counts = {fmt: Counter() for fmt in barcode_formats}
+
+    # Expected barcodes actually observed with each format
+    matched_barcodes = {fmt: set() for fmt in barcode_formats}
+
+    # Single-index runs carry no index2 barcode, so the barcode2-based formats
+    # below cannot match anything (they appear as 0%) but are harmless to test.
+    single_index = all(not read['barcode2'] for read in barcode_info.values())
     
     # Keep track of all found barcodes for diagnostics
     found_barcodes = {}
@@ -326,10 +445,14 @@ def test_barcode_formats(barcode_info, barcode_to_sample, no_rc=False, verbose=F
                     format_examples[fmt_name].append(test_barcode)
                 
                 # Check if this barcode maps to a sample
-                if test_barcode in barcode_to_sample:
+                sample_id, matched_barcode, status = match_barcode(
+                    test_barcode, barcode_to_sample, max_mismatches
+                )
+                status_counts[fmt_name][status] += 1
+                if sample_id is not None:
                     format_counts[fmt_name]['matched'] += 1
-                    sample_id = barcode_to_sample[test_barcode]
                     sample_matches[fmt_name][sample_id] += 1
+                    matched_barcodes[fmt_name].add(matched_barcode)
             except Exception as e:
                 if verbose:
                     print(f"Error with format {fmt_name} for read {read_id}: {str(e)}")
@@ -370,6 +493,12 @@ def test_barcode_formats(barcode_info, barcode_to_sample, no_rc=False, verbose=F
         'success_rates': format_success,
         'best_format': best_format[0],
         'best_rate': best_format[1]['success_rate'],
+        'single_index': single_index,
+        'max_mismatches': max_mismatches,
+        'expected_barcodes': len(barcode_to_sample),
+        'observed_barcodes': len(matched_barcodes[best_format[0]]),
+        'missing_barcodes': sorted(set(barcode_to_sample) - matched_barcodes[best_format[0]]),
+        'best_status_counts': dict(status_counts[best_format[0]]),
         'sample_barcodes': list(found_barcodes.values())[:10],  # First 10 barcodes for reference
         'barcode_to_sample_sizes': {
             'mapping_barcodes': len(barcode_to_sample),
@@ -459,7 +588,8 @@ def print_diagnostic_report(diagnostic, length_stats, barcode_to_sample, args, o
     print_or_write(f"Sample size: {args.sample_size:,} reads")
     print_or_write(f"Mapping file: {args.mapping_file}")
     print_or_write(f"Index1 file: {args.index1}")
-    print_or_write(f"Index2 file: {args.index2}")
+    print_or_write(f"Index2 file: {args.index2 or '(none - single-index run)'}")
+    print_or_write(f"Max barcode mismatches: {getattr(args, 'max_mismatches', 0)}")
     print_or_write(f"Reverse complement formats: {'Tested' if not args.no_rc else 'Skipped'}")
     print_or_write("\n=== BARCODE FORMAT SUCCESS RATES ===\n")
     print_or_write(f"{'Format':<30} | {'Success Rate':<12} | {'Matched/Total':<15} | {'Samples':<10} | {'Example'}")
@@ -496,15 +626,39 @@ def print_diagnostic_report(diagnostic, length_stats, barcode_to_sample, args, o
         # Add to the report
         print_or_write(f"{marker}{fmt_name:<28} | {success_rate:<12.2f} | {ratio:<15} | {samples:<10} | {examples}")
     
+    # Report which expected barcodes were (not) observed. For a run whose barcode
+    # list may be incomplete this is the key number: reads matching no expected
+    # barcode cannot be demultiplexed and are dropped silently by demux tools.
+    if 'expected_barcodes' in diagnostic:
+        print_or_write("\n=== BARCODE SET ACCOUNTING (best format) ===\n")
+        print_or_write(f"Best format: {diagnostic['best_format']}")
+        print_or_write(f"Expected barcodes in barcode source: {diagnostic['expected_barcodes']}")
+        print_or_write(f"Observed expected barcodes: {diagnostic['observed_barcodes']}")
+        print_or_write(f"Expected barcodes never observed: {len(diagnostic['missing_barcodes'])}")
+        if diagnostic['missing_barcodes']:
+            print_or_write(f"  e.g. {', '.join(diagnostic['missing_barcodes'][:10])}")
+        print_or_write(f"Max mismatches allowed: {diagnostic['max_mismatches']}")
+        counts = diagnostic['best_status_counts']
+        for status in ('exact', 'corrected', 'ambiguous', 'unmatched'):
+            print_or_write(f"Reads {status}: {counts.get(status, 0):,}")
+        not_assignable = counts.get('unmatched', 0) + counts.get('ambiguous', 0)
+        total_reads = sum(counts.values())
+        if total_reads:
+            print_or_write(
+                f"Reads not assignable to any sample: {not_assignable:,} "
+                f"({not_assignable / total_reads * 100:.2f}%)"
+            )
+
     # Print barcode length analysis
     print_or_write("\n=== BARCODE LENGTH ANALYSIS ===\n")
     print_or_write("Index1 barcode lengths:")
     for length, count in sorted(length_stats['index1']['lengths'].items()):
         print_or_write(f"  {length} bp: {count:,} reads")
         
-    print_or_write("\nIndex2 barcode lengths:")
-    for length, count in sorted(length_stats['index2']['lengths'].items()):
-        print_or_write(f"  {length} bp: {count:,} reads")
+    if length_stats['index2']['lengths']:
+        print_or_write("\nIndex2 barcode lengths:")
+        for length, count in sorted(length_stats['index2']['lengths'].items()):
+            print_or_write(f"  {length} bp: {count:,} reads")
         
     print_or_write("\nMapping file barcode lengths:")
     for length, count in sorted(length_stats['mapping']['lengths'].items()):
@@ -512,7 +666,8 @@ def print_diagnostic_report(diagnostic, length_stats, barcode_to_sample, args, o
     
     print_or_write("\nLength Analysis:")
     print_or_write(f"  Most common index1 length: {length_stats['index1']['most_common']} bp")
-    print_or_write(f"  Most common index2 length: {length_stats['index2']['most_common']} bp")
+    if length_stats['index2']['lengths']:
+        print_or_write(f"  Most common index2 length: {length_stats['index2']['most_common']} bp")
     print_or_write(f"  Most common mapping length: {length_stats['mapping']['most_common']} bp")
     print_or_write(f"  Combined index length: {length_stats['combined']['length']} bp")
     
@@ -528,7 +683,8 @@ def print_diagnostic_report(diagnostic, length_stats, barcode_to_sample, args, o
     for i, barcode in enumerate(diagnostic['sample_barcodes'][:5]):
         print_or_write(f"Read {i+1}:")
         print_or_write(f"  Index1: {barcode['barcode1']}")
-        print_or_write(f"  Index2: {barcode['barcode2']}")
+        if barcode['barcode2']:
+            print_or_write(f"  Index2: {barcode['barcode2']}")
         
         # For each sample, show what it would be with the best format
         best_format_func = None
@@ -594,10 +750,21 @@ def main():
     # Time the entire process
     start_time = time.time()
     
-    # Read mapping file
-    print(f"Reading mapping file: {args.mapping_file}")
-    mapping_df = read_mapping_file(args.mapping_file)
-    print(f"Found {len(mapping_df)} samples in mapping file")
+    # Read the barcode source: an EMP-style mapping file or a tabular barcode table.
+    if args.barcode_table:
+        print(f"Reading barcode table: {args.barcode_table}")
+        if args.barcode_sheet is not None:
+            print(f"  sheet: {args.barcode_sheet}")
+        mapping_df = read_barcode_table(
+            args.barcode_table,
+            sheet=args.barcode_sheet if args.barcode_sheet is not None else 0,
+            sample_column=args.sample_column,
+            barcode_column=args.barcode_column
+        )
+    else:
+        print(f"Reading mapping file: {args.mapping_file}")
+        mapping_df = read_mapping_file(args.mapping_file)
+    print(f"Found {len(mapping_df)} samples with barcodes")
     
     # Create mapping from barcodes to samples
     barcode_to_sample = create_sample_barcode_map(mapping_df)
@@ -615,12 +782,17 @@ def main():
     length_stats = analyze_barcode_lengths(barcode_info, barcode_to_sample)
     
     # Test different barcode formats
-    print(f"Testing barcode formats...")
+    layout = "single (index1 only)" if not args.index2 else "dual (index1 + index2)"
+    print(f"Index layout: {layout}")
+    if args.max_mismatches:
+        print(f"Allowing up to {args.max_mismatches} mismatch(es) per barcode")
+    print("Testing barcode formats...")
     diagnostic = test_barcode_formats(
         barcode_info,
         barcode_to_sample,
         args.no_rc,
-        args.verbose
+        args.verbose,
+        args.max_mismatches
     )
     
     # Print diagnostic report

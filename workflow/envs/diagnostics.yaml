@@ -13,3 +13,6 @@ dependencies:
   - python=3.14
   - biopython=1.88
   - pandas=2.3.3
+  # openpyxl reads the Excel barcode tables some runs ship (e.g.
+  # data/raw/20240209_16S/barcodes.xlsx) via pandas.read_excel.
+  - openpyxl=3.1.5

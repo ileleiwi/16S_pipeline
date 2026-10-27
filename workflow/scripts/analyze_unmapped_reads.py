@@ -10,7 +10,12 @@ import warnings
 
 warnings.simplefilter("ignore", BiopythonParserWarning)
 
-def read_fastq_safe(file):
+def read_fastq_safe(file, max_reads=0):
+    """Read FASTQ records into a dict, optionally stopping after max_reads.
+
+    The contaminant screen holds every read in memory, so runs with millions of
+    reads must pass max_reads to sample the start of the file.
+    """
     reads = {}
     skipped = 0
     skip_reasons = {
@@ -55,6 +60,9 @@ def read_fastq_safe(file):
                     
                 read_id = header.split()[0][1:]
                 reads[read_id] = seq
+
+                if max_reads and len(reads) >= max_reads:
+                    break
                 
             except Exception as e:
                 print(f"Exception: {str(e)}")
@@ -84,11 +92,14 @@ def main():
     parser.add_argument("--forward", required=True, help="Undetermined_R1.fastq.gz")
     parser.add_argument("--reverse", required=True, help="Undetermined_R2.fastq.gz")
     parser.add_argument("--contaminants", required=True, help="FASTA file of contaminant sequences")
+    parser.add_argument("--max_reads", type=int, default=0,
+                        help="Sample only the first N reads per file (0 = all; "
+                             "recommended for runs with millions of reads)")
     args = parser.parse_args()
 
     print("🔍 Parsing forward and reverse reads safely...")
-    forward_reads, skipped_f, skip_reasons_f = read_fastq_safe(args.forward)
-    reverse_reads, skipped_r, skip_reasons_r = read_fastq_safe(args.reverse)
+    forward_reads, skipped_f, skip_reasons_f = read_fastq_safe(args.forward, args.max_reads)
+    reverse_reads, skipped_r, skip_reasons_r = read_fastq_safe(args.reverse, args.max_reads)
 
     forward_ids = set(forward_reads.keys())
     reverse_ids = set(reverse_reads.keys())

@@ -11,10 +11,44 @@
 import os
 from pathlib import Path
 
+import yaml
+from snakemake.utils import update_config
+
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
+# 1. base configuration (bundled test data + all tunable defaults)
 configfile: "../config/config.yaml"
+
+# 2. optional per-run overlay: config/runs/<dataset>.yaml is deep-merged on top
+#    of the base when the `dataset` key is set (overlay values win). Select a run
+#    with `--config dataset=<name>` or by editing `dataset:` in config.yaml.
+_dataset = config.get("dataset", "")
+RUN_OVERLAY = None
+if _dataset:
+    # Snakemake applies command-line --config values *after* the configfile
+    # directives (documented precedence: the CLI wins). Capture them here and
+    # re-apply them after this overlay merge so that still holds, otherwise e.g.
+    # `--config demultiplex.sample_size=100000` would be shadowed by the overlay.
+    _cli_overrides = dict(getattr(workflow.config_settings, "overwrite_config", {}) or {})
+    RUN_OVERLAY = Path(workflow.basedir).parent / "config" / "runs" / f"{_dataset}.yaml"
+    if not RUN_OVERLAY.exists():
+        raise FileNotFoundError(
+            f"dataset '{_dataset}' selected but {RUN_OVERLAY} does not exist"
+        )
+    with open(RUN_OVERLAY) as _fh:
+        # update_config merges in place (it has no return value): the overlay
+        # wins over the base configuration for every key it defines.
+        update_config(config, yaml.safe_load(_fh) or {})
+    if _cli_overrides:
+        update_config(config, _cli_overrides)
+    print(f"Run overlay applied: {RUN_OVERLAY.name}")
+
+# Convenience overrides so smoke tests need no file edits. Snakemake's --config
+# only accepts flat keys, so dotted paths are exposed under short aliases:
+#   --config dataset=20240209_16S demux_sample_size=100000
+if "demux_sample_size" in config:
+    config.setdefault("demultiplex", {})["sample_size"] = int(config.pop("demux_sample_size"))
 
 # Resolve the workflow root (directory containing this Snakefile).
 WORKFLOW_DIR = Path(workflow.basedir)
@@ -35,10 +69,13 @@ print("16S pipeline starting; see logs/ and results/versions/ for provenance.")
 include: "rules/common.smk"
 include: "rules/preprocessing.smk"   # pre-QC input/index diagnostics
 
+# Demultiplexing (only produces work when `demultiplex.enabled: true`).
+# Must come after common.smk: it uses demux_sample_fastq()/SAMPLES.
+include: "rules/demultiplex.smk"
+
 # Quality control stage (FastQC / fastp / MultiQC). Defines qc_targets().
 include: "rules/qc.smk"
 
-# include: "rules/demultiplex.smk"
 # include: "rules/primer_removal.smk"
 # include: "rules/filtering.smk"
 # include: "rules/denoising.smk"
@@ -53,5 +90,7 @@ rule all:
     input:
         # Pre-QC diagnostics (empty list when disabled in config).
         preprocessing_targets(),
+        # Demultiplexed per-sample FASTQs (empty list unless enabled).
+        demultiplex_targets(),
         # Quality-control outputs (FastQC + fastp + MultiQC).
         qc_targets(),
